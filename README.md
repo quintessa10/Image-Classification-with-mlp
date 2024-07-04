@@ -12,3 +12,7 @@ Patch Extraction: Divide the input image into non-overlapping patches.
 Linear Embedding: Flatten each patch and project it into a higher-dimensional space using a linear layer.
 Mixer Layers: Apply a series of Mixer layers that alternately mix spatial (token) and feature (channel) dimensions.
 Classification Head: Use a global average pooling layer followed by a fully connected layer for classification.
+
+The FNet model is a transformer-like architecture that leverages the Fourier Transform instead of the self-attention mechanism, reducing computational complexity while maintaining competitive performance. The key idea is to use Fourier Transforms to capture global dependencies in the data efficiently.
+
+GMLPlayer (Graph Multi-Layer Perceptron) is a model designed for graph-structured data, combining the principles of Multi-Layer Perceptrons (MLPs) and Graph Neural Networks (GNNs). This model aims to leverage the expressive power of MLPs while effectively handling the relational structure of graph data.
