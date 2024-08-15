@@ -1,0 +1,458 @@
+from google.colab import drive
+drive.mount('/content/drive', force_remount=True)
+
+# prompt: i have a directory named Dataset in drive. it has video file. extract frames (1 frame per second) from all the videos inside directory and save images to "extracted files" folder . create if not found. the frame name should be "filename_frame_number". there are mp4 avi types of files. do for each and everyfile.
+
+!pip install moviepy
+
+import os
+import moviepy.editor as mp
+from google.colab import drive
+
+# Input and output directories
+input_dir = '/content/drive/MyDrive/extracted framess/trained'
+output_dir = '/content/drive/MyDrive/extracted framess/training clusters'
+
+# Create output directory if it doesn't exist
+if not os.path.exists(output_dir):
+  os.makedirs(output_dir)
+
+# Iterate over all files in the input directory
+for filename in os.listdir(input_dir):
+  if filename.endswith(('.mp4', '.avi')):  # Process only MP4 and AVI files
+    filepath = os.path.join(input_dir, filename)
+    clip = mp.VideoFileClip(filepath)
+
+    # Extract frames at 1 frame per second
+    for i, frame in enumerate(clip.iter_frames(fps=1)):
+      frame_filename = f"{filename[:-4]}_frame_{i}.jpg"  # Remove extension and add frame number
+      frame_path = os.path.join(output_dir, frame_filename)
+      mp.ImageClip(frame).save_frame(frame_path)
+
+print("Frame extraction complete.")
+
+
+import os
+import numpy as np
+import cv2
+from keras.layers import Input, Dense, Lambda, Flatten, Reshape
+from keras.models import Model
+from keras import backend as K
+from keras.losses import binary_crossentropy
+from sklearn.cluster import KMeans
+import shutil
+
+# Function to load and preprocess images
+def load_images(image_folder, image_size=(64, 64)):
+    images = []
+    image_paths = []
+    for filename in os.listdir(image_folder):
+        if filename.endswith(".jpg") or filename.endswith(".png"):  # Add other image extensions if needed
+            img_path = os.path.join(image_folder, filename)
+            img = cv2.imread(img_path)
+            img = cv2.resize(img, image_size)
+            img = img.astype('float32') / 255.0  # Normalize pixel values
+            images.append(img)
+            image_paths.append(img_path)
+    return np.array(images), image_paths
+
+# Function to define and train a VAE
+def build_and_train_vae(images, latent_dim=2, epochs=50, batch_size=256):
+    input_shape = images.shape[1:]
+    input_dim = np.prod(input_shape)
+
+    # Encoder
+    inputs = Input(shape=input_shape)
+    x = Flatten()(inputs)
+    h = Dense(256, activation='relu')(x)
+    z_mean = Dense(latent_dim)(h)
+    z_log_var = Dense(latent_dim)(h)
+
+    def sampling(args):
+        z_mean, z_log_var = args
+        epsilon = K.random_normal(shape=(K.shape(z_mean)[0], latent_dim), mean=0., stddev=0.1)
+        return z_mean + K.exp(z_log_var / 2) * epsilon
+
+    z = Lambda(sampling, output_shape=(latent_dim,))([z_mean, z_log_var])
+
+    # Decoder
+    decoder_h = Dense(256, activation='relu')
+    decoder_mean = Dense(input_dim, activation='sigmoid')
+    h_decoded = decoder_h(z)
+    x_decoded_mean = decoder_mean(h_decoded)
+    x_decoded_mean = Reshape(input_shape)(x_decoded_mean)
+
+    # VAE model
+    vae = Model(inputs, x_decoded_mean)
+
+    # VAE loss
+    xent_loss = np.prod(input_shape) * binary_crossentropy(K.flatten(inputs), K.flatten(x_decoded_mean))
+    kl_loss = - 0.5 * K.sum(1 + z_log_var - K.square(z_mean) - K.exp(z_log_var), axis=-1)
+    vae_loss = K.mean(xent_loss + kl_loss)
+    vae.add_loss(vae_loss)
+    vae.compile(optimizer='rmsprop')
+    vae.fit(images, epochs=epochs, batch_size=batch_size, shuffle=True)
+
+    # Encoder model
+    encoder = Model(inputs, z_mean)
+
+    return encoder
+
+# Function to cluster images
+def cluster_images(encoded_images, n_clusters=5):
+    kmeans = KMeans(n_clusters=n_clusters, random_state=0).fit(encoded_images)
+    return kmeans.labels_
+
+# Function to move images to corresponding folders
+def move_images_to_folders(image_paths, labels, output_folder="output"):
+    for label in np.unique(labels):
+        folder_path = os.path.join(output_folder, f'cluster_{label}')
+        os.makedirs(folder_path, exist_ok=True)
+
+    for img_path, label in zip(image_paths, labels):
+        folder_path = os.path.join(output_folder, f'cluster_{label}')
+        shutil.copy(img_path, folder_path)
+
+# Main script
+image_folder = '/content/drive/MyDrive/extracted framess/trained'  # Replace with your image folder path
+output_folder = '/content/drive/MyDrive/files/training clusters'
+
+# Load and preprocess images
+images, image_paths = load_images(image_folder)
+
+# Build and train VAE
+encoder = build_and_train_vae(images)
+
+# Encode images to latent space
+encoded_images = encoder.predict(images)
+
+# Cluster the encoded images
+labels = cluster_images(encoded_images)
+
+# Move images to corresponding folders
+move_images_to_folders(image_paths, labels, output_folder)
+
+print("Images have been separated into folders based on clusters.")
+
+
+
+# prompt: code to onnly count the numbber of images in each cluster from the directory folder of extracted files
+
+import os
+
+# Output directory where clusters are located
+output_dir = '/content/drive/My Drive/clusters'
+
+# Iterate over cluster folders and count images
+for i in range(5):  # Assuming 5 clusters
+    cluster_dir = os.path.join(output_dir, f'cluster_{i}')
+    num_images = len([f for f in os.listdir(cluster_dir) if f.endswith('.jpg')])
+    print(f"Cluster {i}: {num_images} images")
+
+
+
+pip install -U tensorflow-addons
+
+
+import os
+import numpy as np
+import tensorflow as tf
+from tensorflow import keras
+from tensorflow.keras import layers
+import tensorflow_addons as tfa
+from sklearn.model_selection import train_test_split
+from tensorflow.keras.preprocessing.image import load_img, img_to_array
+import matplotlib.pyplot as plt
+
+# Parameters
+num_classes = 5
+input_shape = (64, 64, 3)
+image_size = 64
+patch_size = 8
+num_patches = (image_size // patch_size) ** 2
+embedding_dim = 256
+num_blocks = 4
+weight_decay = 0.0001
+batch_size = 128
+num_epochs = 50
+dropout_rate = 0.2
+learning_rate = 0.0062
+
+# Load images from folders
+def load_images_from_folders(base_dir):
+    images = []
+    labels = []
+    label_map = {}
+    for label, folder_name in enumerate(os.listdir(base_dir)):
+        folder_path = os.path.join(base_dir, folder_name)
+        if os.path.isdir(folder_path):
+            label_map[label] = folder_name
+            for img_name in os.listdir(folder_path):
+                img_path = os.path.join(folder_path, img_name)
+                img = load_img(img_path, target_size=input_shape[:2])
+                img = img_to_array(img)
+                images.append(img)
+                labels.append(label)
+    return np.array(images), np.array(labels), label_map
+
+# Assuming your images are in a directory called "dataset" with subdirectories for each class
+base_dir = '/content/drive/My Drive/clusters'
+x_data, y_data, label_map = load_images_from_folders(base_dir)
+
+# Normalize images
+x_data = x_data.astype('float32') / 255.0
+
+# Split the data
+x_train, x_test, y_train, y_test = train_test_split(x_data, y_data, test_size=0.2, random_state=42)
+
+print(f"x_train shape: {x_train.shape} - y_train shape: {y_train.shape}")
+print(f"x_test shape: {x_test.shape} - y_test shape: {y_test.shape}")
+
+# Data augmentation
+data_augmentation = keras.Sequential(
+    [
+        layers.Normalization(),
+        layers.Resizing(image_size, image_size),
+        layers.RandomFlip("horizontal"),
+        layers.RandomZoom(height_factor=0.2, width_factor=0.2),
+    ],
+    name="data_augmentation",
+)
+data_augmentation.layers[0].adapt(x_train)
+
+# Patches class remains the same
+class Patches(layers.Layer):
+    def __init__(self, patch_size, num_patches):
+        super().__init__()
+        self.patch_size = patch_size
+        self.num_patches = num_patches
+
+    def call(self, images):
+        batch_size = tf.shape(images)[0]
+        patches = tf.image.extract_patches(
+            images=images,
+            sizes=[1, self.patch_size, self.patch_size, 1],
+            strides=[1, self.patch_size, self.patch_size, 1],
+            rates=[1, 1, 1, 1],
+            padding="VALID",
+        )
+        patch_dims = patches.shape[-1]
+        patches = tf.reshape(patches, [batch_size, self.num_patches, patch_dims])
+        return patches
+
+# MLPMixerLayer class remains the same
+class MLPMixerLayer(layers.Layer):
+    def __init__(self, num_patches, hidden_units, dropout_rate, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+
+        self.mlp1 = keras.Sequential(
+            [
+                layers.Dense(units=num_patches),
+                tfa.layers.GELU(),
+                layers.Dense(units=num_patches),
+                layers.Dropout(rate=dropout_rate),
+            ]
+        )
+        self.mlp2 = keras.Sequential(
+            [
+                layers.Dense(units=num_patches),
+                tfa.layers.GELU(),
+                layers.Dense(units=embedding_dim),
+                layers.Dropout(rate=dropout_rate),
+            ]
+        )
+        self.normalize = layers.LayerNormalization(epsilon=1e-6)
+
+    def call(self, inputs):
+        x = self.normalize(inputs)
+        x_channels = tf.linalg.matrix_transpose(x)
+        mlp1_outputs = self.mlp1(x_channels)
+        mlp1_outputs = tf.linalg.matrix_transpose(mlp1_outputs)
+        x = mlp1_outputs + inputs
+        x_patches = self.normalize(x)
+        mlp2_outputs = self.mlp2(x_patches)
+        x = x + mlp2_outputs
+        return x
+
+mlpmixer_blocks = keras.Sequential(
+    [MLPMixerLayer(num_patches, embedding_dim, dropout_rate) for _ in range(num_blocks)]
+)
+
+def build_classifier(blocks, positional_encoding=False):
+    inputs = layers.Input(shape=input_shape)
+    augmented = data_augmentation(inputs)
+    patches = Patches(patch_size, num_patches)(augmented)
+    x = layers.Dense(units=embedding_dim)(patches)
+    if positional_encoding:
+        positions = tf.range(start=0, limit=num_patches, delta=1)
+        position_embedding = layers.Embedding(
+            input_dim=num_patches, output_dim=embedding_dim
+        )(positions)
+        x = x + position_embedding
+    x = blocks(x)
+    representation = layers.GlobalAveragePooling1D()(x)
+    representation = layers.Dropout(rate=dropout_rate)(representation)
+    logits = layers.Dense(num_classes)(representation)
+    return keras.Model(inputs=inputs, outputs=logits)
+
+def run_experiment(model):
+    optimizer = tfa.optimizers.AdamW(learning_rate=learning_rate, weight_decay=weight_decay)
+    model.compile(
+        optimizer=optimizer,
+        loss=keras.losses.SparseCategoricalCrossentropy(from_logits=True),
+        metrics=[
+            keras.metrics.SparseCategoricalAccuracy(name="acc"),
+            keras.metrics.SparseTopKCategoricalAccuracy(5, name="top5-acc"),
+        ],
+    )
+    reduce_lr = keras.callbacks.ReduceLROnPlateau(monitor="val_loss", factor=0.5, patience=5)
+    early_stopping = tf.keras.callbacks.EarlyStopping(monitor="val_loss", patience=10, restore_best_weights=True)
+
+    history = model.fit(
+        x=x_train,
+        y=y_train,
+        batch_size=batch_size,
+        epochs=num_epochs,
+        validation_split=0.1,
+        callbacks=[early_stopping, reduce_lr],
+    )
+    _, accuracy, top_5_accuracy = model.evaluate(x_test, y_test)
+    print(f"Test accuracy: {round(accuracy * 100, 2)}%")
+    print(f"Test top 5 accuracy: {round(top_5_accuracy * 100, 2)}%")
+    return history
+
+mlpmixer_classifier = build_classifier(mlpmixer_blocks)
+history = run_experiment(mlpmixer_classifier)
+
+# Save the model
+model_save_path = 'mlpmixer_classifier.h5'
+mlpmixer_classifier.save(model_save_path)
+print(f"Model saved successfully at {model_save_path}")
+mlpmixer_classifier.summary()
+
+def plot_training_history(history):
+    plt.figure(figsize=(12, 4))
+    plt.subplot(1, 2, 1)
+    plt.plot(history.history['acc'])
+    plt.plot(history.history['val_acc'])
+    plt.title('Model accuracy')
+    plt.ylabel('Accuracy')
+    plt.xlabel('Epoch')
+    plt.legend(['Train', 'Validation'], loc='upper left')
+
+    plt.subplot(1, 2, 2)
+    plt.plot(history.history['loss'])
+    plt.plot(history.history['val_loss'])
+    plt.title('Model loss')
+    plt.ylabel('Loss')
+    plt.xlabel('Epoch')
+    plt.legend(['Train', 'Validation'], loc='upper left')
+    plt.show()
+
+# Plot the training history
+plot_training_history(history)
+
+
+
+import numpy as np
+import tensorflow as tf
+from tensorflow.keras.models import load_model
+from tensorflow.keras.preprocessing.image import load_img, img_to_array
+import matplotlib.pyplot as plt
+
+# Load the trained model
+model_save_path = '/content/mlpmixer_classifier.h5'
+
+# Define the custom Patches layer
+class Patches(layers.Layer):
+    def __init__(self, patch_size, num_patches):
+        super().__init__()
+        self.patch_size = patch_size
+        self.num_patches = num_patches
+
+    def call(self, images):
+        batch_size = tf.shape(images)[0]
+        patches = tf.image.extract_patches(
+            images=images,
+            sizes=[1, self.patch_size, self.patch_size, 1],
+            strides=[1, self.patch_size, self.patch_size, 1],
+            rates=[1, 1, 1, 1],
+            padding="VALID",
+        )
+        patch_dims = patches.shape[-1]
+        patches = tf.reshape(patches, [batch_size, self.num_patches, patch_dims])
+        return patches
+
+# Define the MLPMixerLayer
+class MLPMixerLayer(layers.Layer):
+    def __init__(self, num_patches, hidden_units, dropout_rate, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+
+        self.mlp1 = keras.Sequential(
+            [
+                layers.Dense(units=num_patches),
+                tfa.layers.GELU(),
+                layers.Dense(units=num_patches),
+                layers.Dropout(rate=dropout_rate),
+            ]
+        )
+        self.mlp2 = keras.Sequential(
+            [
+                layers.Dense(units=num_patches),
+                tfa.layers.GELU(),
+                layers.Dense(units=hidden_units),
+                layers.Dropout(rate=dropout_rate),
+            ]
+        )
+        self.normalize = layers.LayerNormalization(epsilon=1e-6)
+
+    def call(self, inputs):
+        x = self.normalize(inputs)
+        x_channels = tf.linalg.matrix_transpose(x)
+        mlp1_outputs = self.mlp1(x_channels)
+        mlp1_outputs = tf.linalg.matrix_transpose(mlp1_outputs)
+        x = mlp1_outputs + inputs
+        x_patches = self.normalize(x)
+        mlp2_outputs = self.mlp2(x_patches)
+        x = x + mlp2_outputs
+        return x
+
+# Load the model with the custom object
+model = load_model(model_save_path, custom_objects={'Patches': Patches, 'MLPMixerLayer': MLPMixerLayer})
+
+#The rest of the code remains the same
+
+# Define a function to preprocess the test images
+def preprocess_image(image_path, target_size):
+    img = load_img(image_path, target_size=target_size)
+    img_array = img_to_array(img)
+    img_array = np.expand_dims(img_array, axis=0)
+    img_array = img_array.astype('float32') / 255.0
+    return img_array
+
+# Define a function to decode the predictions
+def decode_predictions(preds, label_map):
+    predicted_label = np.argmax(preds, axis=1)[0]
+    return label_map[predicted_label]
+
+# Provide the path to your test image
+test_image_path = '/content/drive/MyDrive/clusters/cluster_1/311_frame_3.jpg'
+
+# Preprocess the test image
+input_shape = (64, 64, 3)  # Same as the input shape used during training
+preprocessed_image = preprocess_image(test_image_path, target_size=input_shape[:2])
+
+# Make predictions
+predictions = model.predict(preprocessed_image)
+print(f"Predictions: {predictions}")
+
+# Decode the predictions to get the label
+label_map = {0: 'Engagement', 1: 'Confusion', 2: 'Boredom', 3: 'Frustration', 4: 'Other'}  # Replace with your actual label map
+predicted_label = decode_predictions(predictions, label_map)
+print(f"Predicted Label: {predicted_label}")
+
+# Display the test image with the predicted label
+plt.imshow(load_img(test_image_path))
+plt.title(f"Predicted: {predicted_label}")
+plt.axis('off')
+plt.show()
